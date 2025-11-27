@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>그레이트 킹덤 게임</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        #game-container {
+            text-align: center;
+        }
+        #board-container {
+            display: grid;
+            grid-template-columns: auto repeat(9, 50px) auto;
+            grid-template-rows: auto repeat(9, 50px) auto;
+            gap: 2px;
+            margin-bottom: 20px;
+        }
+        .cell {
+            width: 50px;
+            height: 50px;
+            background-color: #fff;
+            border: 1px solid #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .coordinate {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 16px;
+            font-weight: normal;
+            color: #888;
+        }
+        .blue { background-color: #4242ff; color: white; }
+        .orange { background-color: #ff8c00; color: black; }
+        .neutral { background-color: #808080; }
+        .blue-territory { background-color: #a0a0ff; }
+        .orange-territory { background-color: #ffd280; }
+        #controls {
+            margin-top: 20px;
+        }
+        button {
+            margin: 0 10px;
+            padding: 5px 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <h1>그레이트 킹덤</h1>
+        <div id="board-container"></div>
+        <p id="status"></p>
+        <p id="territory"></p>
+        <div id="controls">
+            <button id="undo-button">이전 턴</button>
+            <button id="redo-button">다음 턴</button>
+            <button id="toggle-numbers">성 번호 숨기기</button>
+            <button id="pass-button">패스</button>
+            <button id="move-neutral">중립 성 이동</button>
+        </div>
+    </div>
+
+    <script>
+        const boardContainer = document.getElementById('board-container');
+        const status = document.getElementById('status');
+        const territory = document.getElementById('territory');
+        const undoButton = document.getElementById('undo-button');
+        const redoButton = document.getElementById('redo-button');
+        const toggleNumbersButton = document.getElementById('toggle-numbers');
+        const passButton = document.getElementById('pass-button');
+        const moveNeutralButton = document.getElementById('move-neutral');
+        let currentPlayer = 'blue';
+        let lastPlayer = null;
+        let gameState = Array(81).fill('');
+        let moveNumbers = Array(81).fill(0);
+        let territoryState = Array(81).fill('');
+        let history = [];
+        let futureStates = [];
+        let castleCount = 0;
+        let hideNumbers = false;
+        let hideNumbersMoveCount = 0;
+        let isMovingNeutral = false;
+        const ORANGE_COMPENSATION = 2.5;
+
+        function createBoard() {
+            boardContainer.appendChild(createCoordinate(''));
+            const files = 'ABCDEFGHI';
+            for (let i = 0; i < 9; i++) {
+                boardContainer.appendChild(createCoordinate(files[i]));
+            }
+            boardContainer.appendChild(createCoordinate(''));
+
+            for (let row = 0; row < 9; row++) {
+                boardContainer.appendChild(createCoordinate(row + 1));
+                for (let col = 0; col < 9; col++) {
+                    const index = row * 9 + col;
+                    const cell = document.createElement('div');
+                    cell.classList.add('cell');
+                    cell.setAttribute('data-index', index);
+                    cell.addEventListener('click', handleCellClick);
+                    boardContainer.appendChild(cell);
+                    if (index === 40) {
+                        cell.classList.add('neutral');
+                        gameState[index] = 'neutral';
+                    }
+                }
+                boardContainer.appendChild(createCoordinate(row + 1));
+            }
+
+            boardContainer.appendChild(createCoordinate(''));
+            for (let i = 0; i < 9; i++) {
+                boardContainer.appendChild(createCoordinate(files[i]));
+            }
+            boardContainer.appendChild(createCoordinate(''));
+        }
+
+        function createCoordinate(text) {
+            const coord = document.createElement('div');
+            coord.classList.add('coordinate');
+            coord.textContent = text;
+            return coord;
+        }
+
+        function handleCellClick(e) {
+            const index = parseInt(e.target.getAttribute('data-index'));
+            
+            if (isMovingNeutral) {
+                if (castleCount > 0) return; // 보드가 비어있을 때만 이동 가능
+                
+                // 기존 중립 성 제거
+                const cells = document.querySelectorAll('.cell');
+                cells.forEach((cell, i) => {
+                    if (gameState[i] === 'neutral') {
+                        cell.classList.remove('neutral');
+                        gameState[i] = '';
+                    }
+                });
+                
+                // 새로운 위치에 중립 성 배치
+                gameState[index] = 'neutral';
+                e.target.classList.add('neutral');
+                isMovingNeutral = false;
+                moveNeutralButton.textContent = '중립 성 이동';
+                return;
+            }
+
+            if (gameState[index] !== '' || territoryState[index] !== '') return;
+
+            saveState();
+            futureStates = [];
+
+            castleCount++;
+            gameState[index] = currentPlayer;
+            moveNumbers[index] = castleCount;
+            e.target.classList.add(currentPlayer);
+            if (!hideNumbers) {
+                e.target.textContent = castleCount;
+            } else {
+                e.target.textContent = castleCount - hideNumbersMoveCount;
+            }
+            
+            lastPlayer = currentPlayer;
+            updateTerritory();
+            updateTerritoryDisplay();
+            
+            switchPlayer();
+            updateStatus();
+
+            updateUndoRedoButtons();
+        }
+
+        function switchPlayer() {
+            currentPlayer = currentPlayer === 'blue' ? 'orange' : 'blue';
+        }
+
+        function updateStatus() {
+            status.textContent = `현재 플레이어: ${currentPlayer === 'blue' ? '파랑' : '주황'}`;
+        }
+
+        function getNeighbors(index) {
+            const neighbors = [];
+            const row = Math.floor(index / 9);
+            const col = index % 9;
+            
+            if (row > 0) neighbors.push(index - 9);
+            if (row < 8) neighbors.push(index + 9);
+            if (col > 0) neighbors.push(index - 1);
+            if (col < 8) neighbors.push(index + 1);
+            
+            return neighbors;
+        }
+
+        function findGroup(index, state, value, visited = new Set()) {
+            if (visited.has(index) || state[index] !== value) return new Set();
+            
+            visited.add(index);
+            const group = new Set([index]);
+            
+            for (const neighbor of getNeighbors(index)) {
+                const neighborGroup = findGroup(neighbor, state, value, visited);
+                for (const cell of neighborGroup) {
+                    group.add(cell);
+                }
+            }
+            
+            return group;
+        }
+
+        function isTouchingAllBorders(group) {
+            let top = false, bottom = false, left = false, right = false;
+            for (const index of group) {
+                const row = Math.floor(index / 9);
+                const col = index % 9;
+                if (row === 0) top = true;
+                if (row === 8) bottom = true;
+                if (col === 0) left = true;
+                if (col === 8) right = true;
+            }
+            return top && bottom && left && right;
+        }
+
+        function updateTerritory() {
+            territoryState = Array(81).fill('');
+            
+            for (let i = 0; i < 81; i++) {
+                if (gameState[i] === '' && territoryState[i] === '') {
+                    const emptyGroup = findGroup(i, gameState, '');
+                    if (!isTouchingAllBorders(emptyGroup)) {
+                        let touchesBlue = false;
+                        let touchesOrange = false;
+                        
+                        for (const cell of emptyGroup) {
+                            for (const neighbor of getNeighbors(cell)) {
+                                if (gameState[neighbor] === 'blue') touchesBlue = true;
+                                if (gameState[neighbor] === 'orange') touchesOrange = true;
+                            }
+                        }
+                        
+                        if (touchesBlue && !touchesOrange) {
+                            for (const cell of emptyGroup) {
+                                territoryState[cell] = 'blue';
+                            }
+                        } else if (touchesOrange && !touchesBlue) {
+                            for (const cell of emptyGroup) {
+                                territoryState[cell] = 'orange';
+                            }
+                        }
+                    }
+                }
+            }
+            
+            updateBoard();
+        }
+
+        function updateTerritoryDisplay() {
+            const blueTerritory = territoryState.filter(cell => cell === 'blue').length;
+            const orangeTerritory = territoryState.filter(cell => cell === 'orange').length;
+            territory.textContent = `영토 - 파랑: ${blueTerritory}, 주황: ${orangeTerritory}+${ORANGE_COMPENSATION}`;
+        }
+
+        function saveState() {
+            history.push({
+                gameState: [...gameState],
+                moveNumbers: [...moveNumbers],
+                territoryState: [...territoryState],
+                currentPlayer,
+                lastPlayer,
+                castleCount,
+                hideNumbers,
+                hideNumbersMoveCount,
+                status: status.textContent
+            });
+        }
+
+        function undo() {
+            if (history.length === 0) return;
+
+            const previousState = history.pop();
+            futureStates.push({
+                gameState: [...gameState],
+                moveNumbers: [...moveNumbers],
+                territoryState: [...territoryState],
+                currentPlayer,
+                lastPlayer,
+                castleCount,
+                hideNumbers,
+                hideNumbersMoveCount,
+                status: status.textContent
+            });
+
+            loadState(previousState);
+            updateUndoRedoButtons();
+        }
+
+        function redo() {
+            if (futureStates.length === 0) return;
+
+            const nextState = futureStates.pop();
+            history.push({
+                gameState: [...gameState],
+                moveNumbers: [...moveNumbers],
+                territoryState: [...territoryState],
+                currentPlayer,
+                lastPlayer,
+                castleCount,
+                hideNumbers,
+                hideNumbersMoveCount,
+                status: status.textContent
+            });
+
+            loadState(nextState);
+            updateUndoRedoButtons();
+        }
+
+        function loadState(state) {
+            gameState = [...state.gameState];
+            moveNumbers = [...state.moveNumbers];
+            territoryState = [...state.territoryState];
+            currentPlayer = state.currentPlayer;
+            lastPlayer = state.lastPlayer;
+            castleCount = state.castleCount;
+            hideNumbers = state.hideNumbers;
+            hideNumbersMoveCount = state.hideNumbersMoveCount;
+
+            updateBoard();
+            updateTerritoryDisplay();
+            status.textContent = state.status;
+            toggleNumbersButton.textContent = hideNumbers ? "성 번호 보이기" : "성 번호 숨기기";
+        }
+
+        function updateBoard() {
+            const cells = document.querySelectorAll('.cell');
+            cells.forEach((cell, index) => {
+                cell.classList.remove('blue', 'orange', 'neutral', 'blue-territory', 'orange-territory');
+                cell.textContent = '';
+                if (gameState[index] === 'blue' || gameState[index] === 'orange') {
+                    cell.classList.add(gameState[index]);
+                    if (!hideNumbers || moveNumbers[index] > hideNumbersMoveCount) {
+                        cell.textContent = hideNumbers ? moveNumbers[index] - hideNumbersMoveCount : moveNumbers[index];
+                    }
+                } else if (gameState[index] === 'neutral') {
+                    cell.classList.add('neutral');
+                } else if (territoryState[index] === 'blue') {
+                    cell.classList.add('blue-territory');
+                } else if (territoryState[index] === 'orange') {
+                    cell.classList.add('orange-territory');
+                }
+            });
+        }
+
+        function updateUndoRedoButtons() {
+            undoButton.disabled = history.length === 0;
+            redoButton.disabled = futureStates.length === 0;
+        }
+
+        function toggleNumbers() {
+            hideNumbers = !hideNumbers;
+            if (hideNumbers) {
+                hideNumbersMoveCount = castleCount;
+            } else {
+                hideNumbersMoveCount = 0;
+            }
+            toggleNumbersButton.textContent = hideNumbers ? "성 번호 보이기" : "성 번호 숨기기";
+            updateBoard();
+        }
+
+        function pass() {
+            saveState();
+            futureStates = [];
+
+            lastPlayer = currentPlayer;
+            switchPlayer();
+            updateStatus();
+            updateUndoRedoButtons();
+        }
+
+        function toggleNeutralMove() {
+            if (castleCount > 0) {
+                alert('중립 성 이동은 게임 시작 전에만 가능합니다.');
+                return;
+            }
+            isMovingNeutral = !isMovingNeutral;
+            moveNeutralButton.textContent = isMovingNeutral ? '이동 취소' : '중립 성 이동';
+        }
+
+        createBoard();
+        undoButton.addEventListener('click', undo);
+        redoButton.addEventListener('click', redo);
+        toggleNumbersButton.addEventListener('click', toggleNumbers);
+        passButton.addEventListener('click', pass);
+        moveNeutralButton.addEventListener('click', toggleNeutralMove);
+        updateStatus();
+        updateTerritoryDisplay();
+        updateUndoRedoButtons();
+    </script>
+</body>
+</html>
